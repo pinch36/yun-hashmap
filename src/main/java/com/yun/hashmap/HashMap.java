@@ -17,9 +17,6 @@ public class HashMap<K,V> {
 
     public HashMap() {
         map = new Entry[DEFAULT_CAPACITY];
-        for (int i = 0; i < DEFAULT_CAPACITY; i++) {
-            map[i] = new Entry<>();
-        }
         capacity = DEFAULT_CAPACITY;
         hash = DEFAULT_CAPACITY - 1;
     }
@@ -29,6 +26,9 @@ public class HashMap<K,V> {
             throw new RuntimeException("键值不能为空..");
         }
         int position = key.hashCode() & hash;
+        if (map[position] == null){
+            map[position] = new Entry<>();
+        }
         Entry<K, V> cur = map[position];
         while (cur.getNext() != null){
             if (cur.getKey() == key){
@@ -49,6 +49,9 @@ public class HashMap<K,V> {
         }
         int position = key.hashCode() & hash;
         Entry<K, V> cur = map[position];
+        if (cur == null){
+            return null;
+        }
         while (cur.getKey() != key){
             if (cur.getNext() == null){
                 return null;
@@ -68,6 +71,9 @@ public class HashMap<K,V> {
         int position = key.hashCode() & hash;
         Entry<K, V> cur = map[position];
         Entry<K, V> pre = cur;
+        if (cur == null){
+            return;
+        }
         while (cur.getKey() != key){
             if (cur.getNext() == null){
                 return;
