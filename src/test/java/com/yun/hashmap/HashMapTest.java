@@ -22,7 +22,13 @@ public class HashMapTest{
     public void testPut() {
         hashMap.put(1,1);
         hashMap.put(2,2);
-        hashMap.put(3,3);
+        hashMap.put(7,7);
+        hashMap.put(15,15);
+        hashMap.put(5,5);
+        hashMap.put(6,6);
+        hashMap.put(7,7);
+        hashMap.put(8,8);
+        hashMap.put(9,9);
         for (int i = 0; i < hashMap.size(); i++) {
             System.out.println(hashMap.get(i + 1));
         }
