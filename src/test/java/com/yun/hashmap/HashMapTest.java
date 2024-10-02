@@ -15,7 +15,7 @@ import org.junit.Test;
 public class HashMapTest{
     private HashMap<Integer,Integer> hashMap;
     @Before
-    public void init(){
+    public void init() throws ClassNotFoundException {
         hashMap = new HashMap<>();
     }
     @Test

@@ -1,5 +1,14 @@
 package com.yun.hashmap;
 
+
+import lombok.extern.slf4j.Slf4j;
+
+import java.io.File;
+import java.io.IOException;
+import java.lang.reflect.Method;
+import java.net.URL;
+import java.util.*;
+
 /**
  * Created with IntelliJ IDEA.
  *
@@ -7,6 +16,7 @@ package com.yun.hashmap;
  * @Date: 2024/09/30/7:26
  * @Description:
  */
+@Slf4j
 public class HashMap<K, V> implements Map<K,V>{
     private NodeEntry<K, V>[] map;
     private final int DEFAULT_CAPACITY = 8;
@@ -16,20 +26,87 @@ public class HashMap<K, V> implements Map<K,V>{
     private int capacity;
     private int[] listSize;
     private float loadFactor;
+    private Class<?> mapAopClass;
+    private java.util.HashMap<String,List<Class<?>>> loadClass;
+    private List<Class> classes;
 
-    public HashMap() {
+    public HashMap() throws ClassNotFoundException {
         capacity = DEFAULT_CAPACITY;
         map = new NodeEntry[capacity];
         seek = capacity - 1;
         listSize = new int[capacity];
         loadFactor = DEFAULT_LOAD_FACTOR;
+        mapAopClass = Class.forName("com.yun.hashmap.MapAop");
+        loadClass = new java.util.HashMap<>();
+        getClassForPackage("com.yun.hashmap");
+        //初始化，找到所有接口实现类放入map
+        load(mapAopClass);
+    }
+
+    private void load(Class<?> aClass) {
+        String aClassName = aClass.getName();
+        List<Class<?>> classList = new ArrayList<>();
+        for (Class aClass1 : classes) {
+            if (aClass.isAssignableFrom(aClass1) && !aClass.equals(aClass1)){
+                classList.add(aClass1);
+            }
+        }
+        loadClass.put(aClassName,classList);
+    }
+
+    private void getClassForPackage(String packageName) {
+        String path = packageName.replace('.', '/');
+        classes = new ArrayList<>();
+        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
+        try {
+            Enumeration<URL> resources = classLoader.getResources(path);
+            while (resources.hasMoreElements()){
+                File file = new File(resources.nextElement().getFile());
+                if (file.isDirectory()){
+                    classes.addAll(findClasses(file, packageName));
+                }
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private List<Class> findClasses(File directory, String packageName) {
+        ArrayList<Class> classList = new ArrayList<>();
+        File[] files = directory.listFiles();
+        for (File file : files) {
+            if (file.isDirectory()){
+                classList.addAll(findClasses(file,packageName + "."+file.getName()));
+            }else if (file.getName().endsWith(".class")){
+                String className = packageName + "." + file.getName().substring(0, file.getName().length() - 6);
+                try {
+                    classList.add(Class.forName(className));
+                } catch (ClassNotFoundException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        }
+        return classList;
     }
 
     private int hash(Object o) {
         return o.hashCode();
     }
-
+    private void aop(Class<?> aopClass,AopContext aopContext){
+        //从接口实现类map中遍历执行
+        List<Class<?>> classList = loadClass.get(aopClass.getName());
+        for (Class<?> aClass : classList) {
+            try {
+                Object object = aClass.newInstance();
+                Method method = aClass.getMethod("print", AopContext.class);
+                method.invoke(object,aopContext);
+            }catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
     public void put(K key, V value) {
+        aop(mapAopClass,new AopContext<>(key,value));
         if (key == null || value == null) {
             throw new RuntimeException("键值不能为空..");
         }
