@@ -7,7 +7,11 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.net.URL;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Created with IntelliJ IDEA.
@@ -17,8 +21,9 @@ import java.util.*;
  * @Description:
  */
 @Slf4j
-public class HashMap<K, V> implements Map<K,V>{
+public class ConcurrentHashMap<K, V> implements Map<K, V> {
     private NodeEntry<K, V>[] map;
+    private NodeEntry<K, V>[] oldMap;
     private final int DEFAULT_CAPACITY = 8;
     private final float DEFAULT_LOAD_FACTOR = 0.75F;
     private int seek;
@@ -27,15 +32,23 @@ public class HashMap<K, V> implements Map<K,V>{
     private int[] listSize;
     private float loadFactor;
     private Class<?> mapAopClass;
-    private java.util.HashMap<String,List<Class<?>>> loadClass;
+    private java.util.HashMap<String, List<Class<?>>> loadClass;
     private List<Class> classes;
+    private int oldCapacity;
+    private int oldSeek;
+    private int[] oldListSize;
+    private int oldSize;
+    private volatile AtomicBoolean rehashing;
+    private volatile AtomicInteger rehashUpdate;
 
-    public HashMap() throws ClassNotFoundException {
+    public ConcurrentHashMap() throws ClassNotFoundException {
         capacity = DEFAULT_CAPACITY;
         map = new NodeEntry[capacity];
         seek = capacity - 1;
         listSize = new int[capacity];
         loadFactor = DEFAULT_LOAD_FACTOR;
+        rehashing = new AtomicBoolean(false);
+        rehashUpdate = new AtomicInteger();
         mapAopClass = Class.forName("com.yun.hashmap.MapAop");
         loadClass = new java.util.HashMap<>();
         getClassForPackage("com.yun.hashmap");
@@ -47,11 +60,11 @@ public class HashMap<K, V> implements Map<K,V>{
         String aClassName = aClass.getName();
         List<Class<?>> classList = new ArrayList<>();
         for (Class aClass1 : classes) {
-            if (aClass.isAssignableFrom(aClass1) && !aClass.equals(aClass1)){
+            if (aClass.isAssignableFrom(aClass1) && !aClass.equals(aClass1)) {
                 classList.add(aClass1);
             }
         }
-        loadClass.put(aClassName,classList);
+        loadClass.put(aClassName, classList);
     }
 
     private void getClassForPackage(String packageName) {
@@ -60,9 +73,9 @@ public class HashMap<K, V> implements Map<K,V>{
         ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
         try {
             Enumeration<URL> resources = classLoader.getResources(path);
-            while (resources.hasMoreElements()){
+            while (resources.hasMoreElements()) {
                 File file = new File(resources.nextElement().getFile());
-                if (file.isDirectory()){
+                if (file.isDirectory()) {
                     classes.addAll(findClasses(file, packageName));
                 }
             }
@@ -75,9 +88,9 @@ public class HashMap<K, V> implements Map<K,V>{
         ArrayList<Class> classList = new ArrayList<>();
         File[] files = directory.listFiles();
         for (File file : files) {
-            if (file.isDirectory()){
-                classList.addAll(findClasses(file,packageName + "."+file.getName()));
-            }else if (file.getName().endsWith(".class")){
+            if (file.isDirectory()) {
+                classList.addAll(findClasses(file, packageName + "." + file.getName()));
+            } else if (file.getName().endsWith(".class")) {
                 String className = packageName + "." + file.getName().substring(0, file.getName().length() - 6);
                 try {
                     classList.add(Class.forName(className));
@@ -92,47 +105,68 @@ public class HashMap<K, V> implements Map<K,V>{
     private int hash(Object o) {
         return o.hashCode();
     }
-    private void aop(Class<?> aopClass,AopContext aopContext){
+
+    private void aop(Class<?> aopClass, AopContext aopContext) {
         //从接口实现类map中遍历执行
         List<Class<?>> classList = loadClass.get(aopClass.getName());
         for (Class<?> aClass : classList) {
             try {
                 Object object = aClass.newInstance();
                 Method method = aClass.getMethod("print", AopContext.class);
-                method.invoke(object,aopContext);
-            }catch (Exception e) {
+                method.invoke(object, aopContext);
+            } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         }
     }
+
     public void put(K key, V value) {
-        aop(mapAopClass,new AopContext<>(key,value));
+        aop(mapAopClass, new AopContext<>(key, value));
         if (key == null || value == null) {
             throw new RuntimeException("键值不能为空..");
         }
         int position = hash(key) & seek;
-        boolean put = put(map, key, value);
-        if (put){
-            listSize[position]++;
-            size++;
+        if (map[position] == null) {
+            synchronized (this) {
+                if (map[position] == null) {
+                    map[position] = new NodeEntry<>();
+                }
+            }
         }
-        if (size >= loadFactor * capacity || listSize[position] >= 8) {
+        NodeEntry<K, V> cur = map[position];
+//        synchronized (cur) {
+//            boolean put = cur.insert(key, value);
+//            if (put) {
+//                listSize[position]++;
+//                size++;
+//            }
+//        }
+        boolean put = cur.insert(key, value);
+        synchronized (cur) {
+            if (put) {
+                listSize[position]++;
+                size++;
+            }
+        }
+        if (size >= loadFactor * capacity || listSize[position] >= 8 || rehashing.get()) {
             rehash();
         }
-    }
-
-    private boolean put(NodeEntry[] entries, K key, V value) {
-        int position = hash(key) & seek;
-        if (entries[position] == null) {
-            entries[position] = new NodeEntry<>();
-        }
-        NodeEntry<K, V> cur = entries[position];
-        return cur.insert(key,value);
     }
 
     public V get(K key) {
         if (key == null) {
             throw new RuntimeException("键不能为空..");
+        }
+        if(rehashing.get()){
+            int position = hash(key) & oldSeek;
+            NodeEntry<K, V> cur = oldMap[position];
+            if (cur == null) {
+                return null;
+            }
+            V value = cur.find(key);
+            if (value != null) {
+                return value;
+            }
         }
         int position = hash(key) & seek;
         NodeEntry<K, V> cur = map[position];
@@ -140,7 +174,7 @@ public class HashMap<K, V> implements Map<K,V>{
             return null;
         }
         V value = cur.find(key);
-        if (value == null){
+        if (value == null) {
             return null;
         }
         return value;
@@ -156,55 +190,94 @@ public class HashMap<K, V> implements Map<K,V>{
         }
         int position = hash(key) & seek;
         NodeEntry<K, V> cur = map[position];
-        if (cur == null){
+        if (cur == null) {
             return;
         }
+//        synchronized (cur) {
+//            boolean delete = cur.delete(key, value);
+//            if (delete) {
+//                listSize[position]--;
+//                size--;
+//            }
+//        }
         boolean delete = cur.delete(key, value);
-        if (delete){
-            listSize[position]--;
-            size--;
+        synchronized (cur) {
+            if (delete) {
+                listSize[position]--;
+                size--;
+            }
         }
     }
 
     public void rehash() {
-        int newCapacity = capacity << 1;
-        int newSeek = newCapacity - 1;
-        int[] newListSize = new int[newCapacity];
-        int newSize = 0;
-        NodeEntry<K, V>[] kvEntry = new NodeEntry[newCapacity];
-        for (int i = 0; i < capacity; i++) {
-            if (map[i] == null) {
+        if (!rehashing.get()) {
+            oldCapacity = capacity;
+            oldSeek = seek;
+            oldListSize = listSize;
+            oldSize = size;
+            oldMap = map;
+            synchronized (this){
+                capacity = capacity << 1;
+                seek = capacity - 1;
+                listSize = new int[capacity];
+                size = 0;
+                map = new NodeEntry[capacity];
+            }
+            rehashing.set(true);
+        }
+        if (rehashUpdate.get() > 10) {
+            return;
+        }
+        rehashUpdate.incrementAndGet();
+        for (int i = 0; i < oldCapacity; i++) {
+            if (oldMap[i] == null) {
                 continue;
             }
-            NodeEntry<K, V> pre = map[i];
+            NodeEntry<K, V> pre = oldMap[i];
+            NodeEntry<K, V> head = pre;
             while (pre.next != null) {
                 NodeEntry<K, V> cur = pre.next;
-                int position = hash(cur.key) & newSeek;
-                if (kvEntry[position] == null) {
-                    kvEntry[position] = new NodeEntry<>();
+                int position = hash(cur.key) & seek;
+                if (map[position] == null) {
+                    synchronized (this) {
+                        if (map[position] == null) {
+                            map[position] = new NodeEntry<>();
+                        }
+                    }
                 }
-                NodeEntry<K, V> listCur = kvEntry[position];
+                NodeEntry<K, V> listCur = map[position];
+                NodeEntry<K, V> newHead = listCur;
                 while (listCur.next != null) {
                     listCur = listCur.next;
                 }
-                listCur.next = cur;
-                pre.next = cur.next;
-                cur.next = null;
-                newListSize[position]++;
-                newSize++;
+                synchronized (head) {
+                    synchronized (newHead) {
+                        listCur.next = cur;
+                        pre.next = cur.next;
+                        cur.next = null;
+                        listSize[position]++;
+                        size++;
+                    }
+                }
             }
         }
-        map = kvEntry;
-        capacity = newCapacity;
-        size = newSize;
-        seek = newSeek;
-        listSize = newListSize;
+        if (rehashUpdate.decrementAndGet() == 0) {
+            synchronized (this){
+                oldMap = null;
+                oldListSize = null;
+                rehashing.set(false);
+            }
+        }
     }
-    public interface Entry<K, V>{
-        boolean insert(K key,V value);
-        boolean delete(K key,V value);
+
+    public interface Entry<K, V> {
+        boolean insert(K key, V value);
+
+        boolean delete(K key, V value);
+
         V find(K key);
     }
+
     public class NodeEntry<K, V> implements Entry<K, V> {
         private K key;
         private V value;
@@ -237,7 +310,7 @@ public class HashMap<K, V> implements Map<K,V>{
             this.next = next;
         }
 
-        public boolean insert(K key,V value) {
+        public boolean insert(K key, V value) {
             NodeEntry cur = this;
             NodeEntry pre = cur;
             while (cur != null) {
@@ -251,7 +324,10 @@ public class HashMap<K, V> implements Map<K,V>{
             NodeEntry<K, V> kvEntry = new NodeEntry<>();
             kvEntry.key = key;
             kvEntry.value = value;
-            pre.next = kvEntry;
+            synchronized (this) {
+                pre.next = kvEntry;
+            }
+//            pre.next = kvEntry;
             return true;
         }
 
@@ -259,7 +335,7 @@ public class HashMap<K, V> implements Map<K,V>{
             NodeEntry cur = this;
             NodeEntry pre = cur;
             while (cur != null) {
-                if (cur.key == key){
+                if (cur.key == key) {
                     return (V) cur.value;
                 }
                 pre = cur;
@@ -278,7 +354,10 @@ public class HashMap<K, V> implements Map<K,V>{
                 pre = cur;
                 cur = cur.next;
             }
-            pre.next = cur.next;
+            synchronized (this) {
+                pre.next = cur.next;
+            }
+//            pre.next = cur.next;
             return true;
         }
     }

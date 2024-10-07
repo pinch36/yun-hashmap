@@ -10,4 +10,7 @@ package com.yun.hashmap;
 public interface Map<K,V> {
     void put(K key,V value);
     void delete(K key,V value);
+    V get(K key);
+    void rehash();
+    int size();
 }
